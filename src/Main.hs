@@ -17,14 +17,16 @@
 -}
 
 import Data.Char (toUpper)
+import Data.Text (unpack)
 import Text.Printf (printf)
 import Options.Applicative
 import Control.Monad (mzero)
+import Data.HashMap.Strict (toList)
 import Data.List (intercalate)
 import Network.HTTP.Conduit (simpleHttp)
 import Data.Aeson (decode, FromJSON(..), Value(..), (.:))
+import qualified Data.Aeson.Types as AT
 import qualified Data.ByteString.Lazy.Char8 as B
-import qualified Data.Map as M
 
 -- Parse Arguments -------------------------------------------------------------
 
@@ -91,39 +93,44 @@ type Price  = Double
 
 data Market = Market { price  :: Price
                      , volume :: Volume
+                     , name   :: Name
                      } deriving (Show)
 
--- TODO: 'readMaybe' instead of the partial 'read'
-instance FromJSON Market where
-  parseJSON (Object o) = Market
-                         <$> (read <$> o .: "price")
-                         <*> (read <$> o .: "vol")
-  parseJSON _ = mzero
-
 type Name       = String
-type MarketsObj = M.Map Name Market
 type Version    = String
 type Slot       = Int
 
-data Response = Response MarketsObj Version Slot deriving (Show)
+data Response = Response [Market] Version Slot deriving (Show)
 
 instance FromJSON Response where
-  parseJSON (Object o) = Response
-                         <$> (o .: "markets" >>= parseJSON)
-                         <*> (o .: "ver")
-                         <*> (o .: "slot")
+  parseJSON (Object o) =
+    Response
+    <$> (o .: "markets" >>= parseMarkets)
+    <*> (o .: "ver")
+    <*> (o .: "slot")
   parseJSON _ = mzero
 
-namedMarkets :: Response -> [(Name, Market)]
-namedMarkets (Response mo _ _) = M.toList mo
+parseMarkets :: Value -> AT.Parser [Market]
+parseMarkets (Object o) = do
+  -- TODO: 'readMaybe' instead of the partial 'read'
+  let ms = map (\(k, (Object v)) ->
+                 Market
+                 <$> (read <$> v .: "price")
+                 <*> (read <$> v .: "vol")
+                 <*> (pure $ unpack k)) $ toList o
+
+  sequence ms
+
+namedMarkets :: Response -> [Market]
+namedMarkets (Response mo _ _) = mo
 
 markets :: Response -> [Market]
-markets r = map snd $ namedMarkets r
+markets r = namedMarkets r
 
 -- Verbose stuff ---------------------------------------------------------------
 
-marketString :: Currency -> (Name, Market) -> String
-marketString c (n, m) = printf "1 BTC = %.2f %s on %s" (price m) c n
+marketString :: Currency -> Market -> String
+marketString c m = printf "1 BTC = %.2f %s on %s" (price m) c (name m)
 
 marketsString :: Response -> Currency -> String
 marketsString r c = intercalate "\n" $ map (marketString c) (namedMarkets r)
